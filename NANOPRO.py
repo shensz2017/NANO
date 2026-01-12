@@ -15,6 +15,7 @@ try:
     import time
     from datetime import datetime
     from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image, ImageTk
 except ImportError as e:
     with open("crash_log.txt", "w", encoding="utf-8") as f:
         f.write(f"启动失败，缺少库文件: {str(e)}\n\n完整报错:\n{traceback.format_exc()}")
@@ -89,6 +90,9 @@ class NanoBananaApp:
         self.executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         self.active_tasks_count = 0
         self.lock = threading.Lock()
+
+        # 素材库
+        self.material_images = []
         
         # 全局Session
         self.session = create_session()
@@ -188,8 +192,25 @@ class NanoBananaApp:
         frame = ttk.Frame(self.tab_batch, padding=10)
         frame.pack(fill="both", expand=True)
 
+        paned = ttk.PanedWindow(frame, orient="horizontal")
+        paned.pack(fill="both", expand=True)
+
+        material_frame = ttk.LabelFrame(paned, text="图片素材库", padding=5)
+        paned.add(material_frame, weight=1)
+
+        content_frame = ttk.Frame(paned)
+        paned.add(content_frame, weight=4)
+
+        self.materials_view = ScrollableFrame(material_frame)
+        self.materials_view.pack(fill="both", expand=True, pady=5)
+
+        material_btns = ttk.Frame(material_frame)
+        material_btns.pack(fill="x", pady=(5, 0))
+        ttk.Button(material_btns, text="上传", command=self.add_material_images).pack(side="left", expand=True, fill="x", padx=(0, 3))
+        ttk.Button(material_btns, text="清空", command=self.clear_material_images).pack(side="left", expand=True, fill="x", padx=(3, 0))
+
         # 模式选择区域
-        mode_frame = ttk.LabelFrame(frame, text="1. 选择批量模式", padding=10)
+        mode_frame = ttk.LabelFrame(content_frame, text="1. 选择批量模式", padding=10)
         mode_frame.pack(fill="x", pady=5)
         
         ttk.Radiobutton(mode_frame, text="文件夹图片 (Img2Img)", variable=self.batch_mode_var, value="img_folder", command=self.on_batch_mode_change).pack(side="left", padx=10)
@@ -197,14 +218,14 @@ class NanoBananaApp:
         ttk.Radiobutton(mode_frame, text="指定数量 (文生图循环)", variable=self.batch_mode_var, value="count_loop", command=self.on_batch_mode_change).pack(side="left", padx=10)
 
         # 动态输入区域
-        self.input_container = ttk.Frame(frame)
+        self.input_container = ttk.Frame(content_frame)
         self.input_container.pack(fill="x", pady=5)
         
         # 初始化显示文件夹选择器
         self.setup_folder_input()
 
         # 批量工具
-        tool_frame = ttk.LabelFrame(frame, text="批量提示词工具", padding=5)
+        tool_frame = ttk.LabelFrame(content_frame, text="批量提示词工具", padding=5)
         tool_frame.pack(fill="x", pady=5)
         self.global_prompt_var = tk.StringVar()
         ttk.Entry(tool_frame, textvariable=self.global_prompt_var).pack(side="left", fill="x", expand=True, padx=5)
@@ -212,7 +233,7 @@ class NanoBananaApp:
         ttk.Button(tool_frame, text="强制覆盖", command=lambda: self.batch_fill_prompts(True)).pack(side="left", padx=2)
 
         # 列表
-        list_container = ttk.LabelFrame(frame, text="任务队列", padding=2)
+        list_container = ttk.LabelFrame(content_frame, text="任务队列", padding=2)
         list_container.pack(fill="both", expand=True, pady=5)
         header = ttk.Frame(list_container)
         header.pack(fill="x", padx=5)
@@ -223,7 +244,7 @@ class NanoBananaApp:
         self.list_frame = ScrollableFrame(list_container)
         self.list_frame.pack(fill="both", expand=True)
 
-        ttk.Button(frame, text="启动批量任务 (自动保存Key)", command=self.start_batch_tasks).pack(fill="x", pady=5)
+        ttk.Button(content_frame, text="启动批量任务 (自动保存Key)", command=self.start_batch_tasks).pack(fill="x", pady=5)
 
     def setup_folder_input(self):
         """动态构建输入UI - 文件夹选择器"""
@@ -319,6 +340,7 @@ class NanoBananaApp:
             files = [f for f in os.listdir(folder) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
         elif mode == "txt_folder":
             files = [f for f in os.listdir(folder) if f.lower().endswith('.txt')]
+        files.sort()
 
         if not files:
             messagebox.showinfo("提示", "该文件夹下没有匹配的文件")
@@ -383,11 +405,56 @@ class NanoBananaApp:
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode('utf-8')
                 ext = os.path.splitext(path)[1].lower()
-                mime = "image/jpeg" if ext in ['.jpg','.jpeg'] else "image/png"
+                if ext in ['.jpg', '.jpeg']:
+                    mime = "image/jpeg"
+                elif ext == ".webp":
+                    mime = "image/webp"
+                else:
+                    mime = "image/png"
                 return f"data:{mime};base64,{b64}"
         except Exception as e:
             self.log(f"读取图片失败 {path}: {e}")
             return None
+
+    def add_material_images(self):
+        files = filedialog.askopenfilenames(filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.webp")])
+        if not files:
+            return
+        for path in files:
+            self.material_images.append({"path": path, "thumbnail": self.create_thumbnail(path)})
+        self.refresh_material_thumbnails()
+
+    def clear_material_images(self):
+        self.material_images = []
+        self.refresh_material_thumbnails()
+
+    def create_thumbnail(self, path):
+        try:
+            image = Image.open(path)
+            image.thumbnail((120, 120))
+            return ImageTk.PhotoImage(image)
+        except Exception as e:
+            self.log(f"素材缩略图生成失败 {path}: {e}")
+            return None
+
+    def refresh_material_thumbnails(self):
+        for widget in self.materials_view.scrollable_frame.winfo_children():
+            widget.destroy()
+
+        if not self.material_images:
+            ttk.Label(self.materials_view.scrollable_frame, text="暂无素材").pack(anchor="center", pady=10)
+            return
+
+        for idx, item in enumerate(self.material_images, start=1):
+            row = ttk.Frame(self.materials_view.scrollable_frame)
+            row.pack(fill="x", padx=5, pady=5)
+            ttk.Label(row, text=str(idx), width=4, anchor="center").pack(side="left")
+            if item["thumbnail"]:
+                thumb_label = ttk.Label(row, image=item["thumbnail"])
+                thumb_label.image = item["thumbnail"]
+                thumb_label.pack(side="left")
+            else:
+                ttk.Label(row, text=os.path.basename(item["path"]), width=20).pack(side="left")
 
     def download_image(self, url, prefix):
         save_dir = self.save_path_var.get()
@@ -520,14 +587,22 @@ class NanoBananaApp:
         
         # 准备图片 (如果有)
         processed_urls = []
-        if task.get("urls"):
-            for p in task["urls"]:
+        task_urls = task.get("urls") or []
+        material_paths = [item["path"] for item in self.material_images]
+        image_paths = material_paths + task_urls
+        task_image_success = 0
+        if image_paths:
+            for p in image_paths:
                 b64 = self.image_to_base64(p)
-                if b64: processed_urls.append(b64)
-                else: self.log(f"⚠️ {filename} 图片读取失败")
+                if b64:
+                    processed_urls.append(b64)
+                    if p in task_urls:
+                        task_image_success += 1
+                else:
+                    self.log(f"⚠️ {filename} 图片读取失败")
             
             # 如果是图生图模式却没读到图，报错
-            if not processed_urls and task["type"] == "img_folder":
+            if task["type"] == "img_folder" and task_urls and task_image_success == 0:
                  self.log(f"❌ {filename} 失败: 图片数据为空")
                  self.update_ui_status(item, "图片错误", "red")
                  with self.lock: self.active_tasks_count -= 1
